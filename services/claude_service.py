@@ -192,6 +192,44 @@ async def generate_unit_card_caption(listing: dict, match_id: int) -> str:
     return "\n".join(lines)
 
 
+async def generate_recommendation_reason(
+    listing: dict, pref: dict, rank: int
+) -> str:
+    """
+    Generate ONE concise sentence explaining why this listing is a top pick
+    for this buyer. Used by the /recommend Telegram command.
+    """
+    price_str = f"SGD {listing.get('asking_price', 0):,.0f}" if listing.get("asking_price") else "price on request"
+    budget_str = (
+        f"SGD {pref.get('price_min', 0):,.0f}–{pref.get('price_max', 0):,.0f}"
+        if pref.get("price_max")
+        else "no budget set"
+    )
+
+    prompt = f"""You are SGAbode, a Singapore property advisor. A buyer ranked #{rank} this listing in their personalised results.
+
+Buyer is looking to {pref.get('intent', 'buy')}:
+- Budget: {budget_str}
+- Property types: {', '.join(pref.get('property_types') or []) or 'any'}
+- Bedrooms: {pref.get('bedrooms') or 'any'}
+- Districts: D{', D'.join(str(d) for d in (pref.get('districts') or [])) or 'any'}
+
+Listing #{rank}:
+- {listing.get('title')}
+- {price_str} · {listing.get('floor_size')} sqft · {listing.get('bedrooms')}BR
+- District D{listing.get('district')} · Built {listing.get('build_year')} · {listing.get('tenure')}
+- PSF: SGD {listing.get('psf')}
+
+Write EXACTLY ONE sentence (max 25 words) explaining specifically why this listing ranks #{rank} for this buyer. Be concrete — mention price, size, district, or build year if relevant. No generic phrases."""
+
+    response = await _client.messages.create(
+        model=MODEL,
+        max_tokens=80,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text.strip().strip('"')
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _strip_fences(text: str) -> str:

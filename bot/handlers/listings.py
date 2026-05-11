@@ -182,6 +182,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/like\\_<id> — like a matched listing\n"
         "/skip\\_<id> — skip a matched listing\n"
         "/view\\_<id> — request a viewing\n"
+        "/recommend — your top 5–10 personalised picks\n"
         "/help — show this message",
         parse_mode="Markdown",
     )

@@ -13,13 +13,14 @@ controls registration order.
 
 from telegram.ext import Application
 
-from bot.handlers import onboarding, preferences, listings
+from bot.handlers import onboarding, preferences, listings, recommendations
 
 # Ordered list — ConversationHandlers first
 HANDLER_MODULES = [
-    onboarding,    # /start ConversationHandler (highest priority)
-    preferences,   # /update ConversationHandler + /preferences command
-    listings,      # /liked, /help, /like_N, /skip_N, /view_N
+    onboarding,       # /start ConversationHandler (highest priority)
+    preferences,      # /update ConversationHandler + /preferences command
+    listings,         # /liked, /help, /like_N, /skip_N, /view_N
+    recommendations,  # /recommend — ranked listings with AI reasons
 ]
 
 

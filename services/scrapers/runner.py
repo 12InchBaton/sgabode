@@ -20,13 +20,19 @@ from events import bus
 from models import Listing
 from services.scrapers.base import BaseScraper
 from services.scrapers.hdb import HDBPortalScraper
+from services.scrapers.hdb_rental import HDBRentalScraper
+from services.scrapers.ninetyco import NinetyCoScraper
 from services.scrapers.propertyguru import PropertyGuruScraper
+from services.scrapers.ura import URAScraper
 
 logger = logging.getLogger(__name__)
 
 # All registered scrapers — add new scrapers here
-ALL_SCRAPERS: list[Type[BaseScraper]] = [
+ALL_SCRAPERS: list = [
     HDBPortalScraper,
+    HDBRentalScraper,
+    URAScraper,
+    NinetyCoScraper,
     PropertyGuruScraper,
 ]
 

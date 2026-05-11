@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
 
+    # URA Data Service (free key from ura.gov.sg/maps/api/)
+    URA_ACCESS_KEY: str = ""
+
     # App
     API_BASE_URL: str = "http://localhost:8000"
     LISTING_BOOST_PRICE: int = 4900  # cents
