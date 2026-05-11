@@ -174,7 +174,7 @@ async def show_liked(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "*ProPad Commands*\n\n"
+        "*SGAbode Commands*\n\n"
         "/start — set up or reset your preferences\n"
         "/preferences — view your current preferences\n"
         "/update — update preferences via natural language\n"

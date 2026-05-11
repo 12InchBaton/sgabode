@@ -29,7 +29,7 @@ def build_application() -> Application:
 
 def run() -> None:
     app = build_application()
-    logger.info("ProPad bot starting (long polling)...")
+    logger.info("SGAbode bot starting (long polling)...")
     app.run_polling(drop_pending_updates=True)
 
 

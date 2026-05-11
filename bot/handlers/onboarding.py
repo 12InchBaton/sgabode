@@ -58,6 +58,59 @@ def _property_type_kb():
     ])
 
 
+# All 28 Singapore postal districts
+SINGAPORE_DISTRICTS = {
+    1:  "Raffles Place / Marina",
+    2:  "Anson / Tanjong Pagar",
+    3:  "Queenstown / Tiong Bahru",
+    4:  "Telok Blangah / Harbourfront",
+    5:  "Pasir Panjang / Clementi",
+    6:  "High Street / Beach Road",
+    7:  "Middle Road / Golden Mile",
+    8:  "Little India",
+    9:  "Orchard / River Valley",
+    10: "Ardmore / Bukit Timah / Holland",
+    11: "Novena / Thomson",
+    12: "Balestier / Toa Payoh",
+    13: "Macpherson / Braddell",
+    14: "Geylang / Eunos",
+    15: "Katong / Joo Chiat / Amber",
+    16: "Bedok / Upper East Coast",
+    17: "Loyang / Changi",
+    18: "Tampines / Pasir Ris",
+    19: "Serangoon / Hougang / Punggol",
+    20: "Bishan / Ang Mo Kio",
+    21: "Clementi Park / Ulu Pandan",
+    22: "Jurong",
+    23: "Bukit Panjang / Choa Chu Kang",
+    24: "Lim Chu Kang / Tengah",
+    25: "Kranji / Woodgrove",
+    26: "Upper Thomson / Springleaf",
+    27: "Yishun / Sembawang",
+    28: "Seletar",
+}
+
+
+def _district_kb(selected: list[int]) -> InlineKeyboardMarkup:
+    """Build a 2-column inline keyboard for all 28 districts with toggle indicators."""
+    rows = []
+    district_items = list(SINGAPORE_DISTRICTS.items())
+
+    for i in range(0, len(district_items), 2):
+        row = []
+        for num, name in district_items[i:i + 2]:
+            tick = "✅ " if num in selected else ""
+            label = f"{tick}D{num} {name}"
+            row.append(InlineKeyboardButton(label, callback_data=f"dist_{num}"))
+        rows.append(row)
+
+    rows.append([
+        InlineKeyboardButton("🌍 Any district", callback_data="dist_any"),
+        InlineKeyboardButton("✅ Done", callback_data="dist_done"),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 def _furnishing_kb():
     return InlineKeyboardMarkup([
         [
@@ -89,7 +142,7 @@ def _format_prefs(data: dict) -> str:
         f"• Price: SGD {data.get('price_min', 0):,.0f} – {data.get('price_max', 0):,.0f}",
         f"• Bedrooms: {data.get('bedrooms', []) or 'any'}",
         f"• Bathrooms: {data.get('bathrooms', []) or 'any'}",
-        f"• Districts: {data.get('districts', []) or 'any'}",
+        f"• Districts: {', '.join(f'D{n} {SINGAPORE_DISTRICTS.get(n,"")}' for n in data.get('districts', [])) or 'any'}",
         f"• Max MRT distance: {data.get('mrt_distance_max') or '—'} m",
         f"• Furnishing: {', '.join(data.get('furnishing', [])) or 'any'}",
     ])
@@ -100,7 +153,7 @@ def _format_prefs(data: dict) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     await update.message.reply_text(
-        "👋 Welcome to *ProPad* — Singapore's smartest property discovery bot!\n\n"
+        "👋 Welcome to *SGAbode* — Singapore's smartest property discovery bot!\n\n"
         "Let's set up your profile. What's your name?",
         parse_mode="Markdown",
     )
@@ -215,25 +268,52 @@ async def get_bathrooms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         except ValueError:
             await update.message.reply_text("Enter numbers like `1,2` or `any`.", parse_mode="Markdown")
             return GET_BATHROOMS
+    context.user_data["districts"] = []
     await update.message.reply_text(
-        "Which *districts*? (1-28, comma-separated, or `any`)\ne.g. `9,10,11`",
+        "Which *districts* do you prefer?\nTap to select, then ✅ Done.\nOr tap 🌍 Any district to skip.",
         parse_mode="Markdown",
+        reply_markup=_district_kb([]),
     )
     return GET_DISTRICTS
 
 
 async def get_districts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip().lower()
-    if text == "any":
+    query = update.callback_query
+    await query.answer()
+    selected: list = context.user_data.setdefault("districts", [])
+
+    if query.data == "dist_any":
         context.user_data["districts"] = []
-    else:
-        try:
-            context.user_data["districts"] = [int(x.strip()) for x in text.split(",")]
-        except ValueError:
-            await update.message.reply_text("Enter district numbers like `9,10,11` or `any`.", parse_mode="Markdown")
+        await query.edit_message_text(
+            "Max distance from MRT? (metres, e.g. `500`, or `any`)",
+        )
+        return GET_MRT_DISTANCE
+
+    if query.data == "dist_done":
+        if not selected:
+            await query.answer("Select at least one district or tap 🌍 Any district.", show_alert=True)
             return GET_DISTRICTS
-    await update.message.reply_text("Max distance from MRT? (metres, e.g. `500`, or `any`)")
-    return GET_MRT_DISTANCE
+        names = ", ".join(f"D{n}" for n in sorted(selected))
+        await query.edit_message_text(
+            f"Selected: *{names}*\n\nMax distance from MRT? (metres, e.g. `500`, or `any`)",
+            parse_mode="Markdown",
+        )
+        return GET_MRT_DISTANCE
+
+    # Toggle selected district
+    num = int(query.data.replace("dist_", ""))
+    if num in selected:
+        selected.remove(num)
+    else:
+        selected.append(num)
+
+    names = ", ".join(f"D{n} {SINGAPORE_DISTRICTS[n]}" for n in sorted(selected)) if selected else "none yet"
+    await query.edit_message_text(
+        f"Selected: *{names}*\nTap more or ✅ Done.",
+        parse_mode="Markdown",
+        reply_markup=_district_kb(selected),
+    )
+    return GET_DISTRICTS
 
 
 async def get_mrt_distance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -337,7 +417,7 @@ def _build() -> ConversationHandler:
             GET_PRICE_RANGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_price_range)],
             GET_BEDROOMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_bedrooms)],
             GET_BATHROOMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_bathrooms)],
-            GET_DISTRICTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_districts)],
+            GET_DISTRICTS: [CallbackQueryHandler(get_districts, pattern="^dist_")],
             GET_MRT_DISTANCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_mrt_distance)],
             GET_FURNISHING: [CallbackQueryHandler(get_furnishing, pattern="^furn_")],
             CONFIRM: [CallbackQueryHandler(confirm, pattern="^confirm_")],

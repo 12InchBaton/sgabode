@@ -1,5 +1,5 @@
 """
-ProPad FastAPI application entry point.
+SGAbode FastAPI application entry point.
 
 To add new route domains:   → routes/registry.py
 To add new event listeners: → services/registry.py
@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
 from routes.registry import ROUTERS
 from services.registry import register_all as register_service_listeners
+from services.scrapers.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -21,7 +22,7 @@ logging.basicConfig(
 )
 
 app = FastAPI(
-    title="ProPad API",
+    title="SGAbode API",
     description="Singapore property discovery platform",
     version="1.0.0",
 )
@@ -41,8 +42,14 @@ for router in ROUTERS:
 async def startup() -> None:
     await init_db()
     register_service_listeners()
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    stop_scheduler()
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "ProPad API"}
+    return {"status": "ok", "service": "SGAbode API"}
