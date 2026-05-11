@@ -36,6 +36,54 @@ _SECTOR_TO_DISTRICT: dict[int, int] = {
 }
 
 
+# HDB town name → district mapping (for records without postal codes)
+_TOWN_TO_DISTRICT: dict[str, int] = {
+    "RAFFLES PLACE": 1, "MARINA": 1, "CITY": 1,
+    "TANJONG PAGAR": 2, "ANSON": 2,
+    "QUEENSTOWN": 3, "TIONG BAHRU": 3, "ALEXANDRA": 3,
+    "TELOK BLANGAH": 4, "HARBOURFRONT": 4,
+    "PASIR PANJANG": 5, "CLEMENTI": 5, "WEST COAST": 5,
+    "HIGH STREET": 6, "BEACH ROAD": 6,
+    "GOLDEN MILE": 7, "MIDDLE ROAD": 7,
+    "LITTLE INDIA": 8, "FARRER PARK": 8, "SERANGOON ROAD": 8,
+    "ORCHARD": 9, "RIVER VALLEY": 9,
+    "BUKIT TIMAH": 10, "HOLLAND": 10, "ARDMORE": 10,
+    "NOVENA": 11, "THOMSON": 11, "MOULMEIN": 11,
+    "TOA PAYOH": 12, "BALESTIER": 12,
+    "MACPHERSON": 13, "BRADDELL": 13,
+    "GEYLANG": 14, "EUNOS": 14,
+    "KATONG": 15, "JOO CHIAT": 15, "AMBER": 15, "MARINE PARADE": 15,
+    "BEDOK": 16, "UPPER EAST COAST": 16, "CHAI CHEE": 16,
+    "LOYANG": 17, "CHANGI": 17,
+    "TAMPINES": 18, "PASIR RIS": 18,
+    "SERANGOON": 19, "HOUGANG": 19, "PUNGGOL": 19, "SENGKANG": 19,
+    "BISHAN": 20, "ANG MO KIO": 20,
+    "CLEMENTI PARK": 21, "ULU PANDAN": 21,
+    "JURONG": 22, "BOON LAY": 22, "TUAS": 22,
+    "BUKIT PANJANG": 23, "CHOA CHU KANG": 23, "HILLVIEW": 23,
+    "LIM CHU KANG": 24, "TENGAH": 24,
+    "KRANJI": 25, "WOODGROVE": 25, "WOODLANDS": 25,
+    "UPPER THOMSON": 26, "SPRINGLEAF": 26,
+    "YISHUN": 27, "SEMBAWANG": 27,
+    "SELETAR": 28,
+}
+
+
+def town_to_district(town: str | None) -> int | None:
+    """Return district from an HDB town name."""
+    if not town:
+        return None
+    town_upper = town.upper().strip()
+    # Direct match first
+    if town_upper in _TOWN_TO_DISTRICT:
+        return _TOWN_TO_DISTRICT[town_upper]
+    # Partial match
+    for key, district in _TOWN_TO_DISTRICT.items():
+        if key in town_upper or town_upper in key:
+            return district
+    return None
+
+
 def postal_to_district(postal_code: str | None) -> int | None:
     """Return Singapore district number from a 6-digit postal code."""
     if not postal_code:

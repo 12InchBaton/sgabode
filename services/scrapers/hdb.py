@@ -14,7 +14,7 @@ import re
 
 import httpx
 
-from services.scrapers.utils import postal_to_district
+from services.scrapers.utils import postal_to_district, town_to_district
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class HDBPortalScraper:
             floor_size_sqft = round(float(floor_area_sqm) * 10.764, 1) if floor_area_sqm else None
             price = float(resale_price) if resale_price else None
             psf = round(price / floor_size_sqft, 2) if price and floor_size_sqft else None
-            district = postal_to_district(postal) if postal else None
+            district = postal_to_district(postal) if postal else town_to_district(town)
 
             # Parse storey range midpoint e.g. "07 TO 09" → 8
             floor_level = None
