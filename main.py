@@ -24,7 +24,7 @@ logging.basicConfig(
 app = FastAPI(
     title="SGAbode API",
     description="Singapore property discovery platform",
-    version="1.0.0",
+    version="1.0.1",
 )
 
 app.add_middleware(
