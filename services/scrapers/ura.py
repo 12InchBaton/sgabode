@@ -5,8 +5,9 @@ Requires URA_ACCESS_KEY env var.
 Free registration: https://www.ura.gov.sg/maps/api/
 
 API flow:
-  1. POST insertNewToken.action   → daily token
-  2. GET  invokeUraDS?service=PMI_Resi_Transaction&batch=1  → transaction data
+  1. GET insertNewToken.action              → daily token
+  2. GET invokeUraDS?service=PMI_Resi_Transaction&batch=1  → sale transactions
+  3. GET invokeUraDS?service=PMI_Resi_Rental&batch=1       → rental contracts
 """
 
 import logging
@@ -50,7 +51,9 @@ class URAScraper:
             token = await self._get_token(client, access_key)
             if not token:
                 return []
-            return await self._fetch_transactions(client, access_key, token)
+            sales = await self._fetch_transactions(client, access_key, token)
+            rentals = await self._fetch_rentals(client, access_key, token)
+            return sales + rentals
 
     async def _get_token(self, client: httpx.AsyncClient, access_key: str) -> str | None:
         try:
@@ -178,5 +181,107 @@ class URAScraper:
                 })
             except Exception as exc:
                 logger.debug("[ura] Transaction parse error: %s", exc)
+
+        return results
+
+    async def _fetch_rentals(
+        self, client: httpx.AsyncClient, access_key: str, token: str
+    ) -> list[dict]:
+        results = []
+        try:
+            resp = await client.get(
+                f"{_URA_BASE}/invokeUraDS",
+                params={"service": "PMI_Resi_Rental", "batch": "1"},
+                headers={"AccessKey": access_key, "Token": token},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get("Status") != "Success":
+                logger.warning("[ura] Rental API error: %s", data.get("Message", "unknown"))
+                return []
+
+            for project in data.get("Result") or []:
+                results.extend(self._parse_rental_project(project))
+
+        except Exception as exc:
+            logger.error("[ura] Rental fetch error: %s", exc)
+
+        results = results[:100]
+        logger.info("[ura] %d rental records fetched", len(results))
+        return results
+
+    def _parse_rental_project(self, project: dict) -> list[dict]:
+        results = []
+        project_name = project.get("project", "").strip()
+        street = project.get("street", "").strip()
+        district_raw = project.get("district")
+        prop_type_raw = project.get("propertyType", "")
+        prop_type = _PROP_TYPE_MAP.get(prop_type_raw, "condo")
+
+        district_num = None
+        if district_raw:
+            try:
+                district_num = int(district_raw)
+            except (ValueError, TypeError):
+                pass
+
+        for txn in project.get("transaction") or []:
+            try:
+                area_sqft_raw = txn.get("areaSqft") or txn.get("area")
+                area_sqm_raw = txn.get("areaSqm")
+                if area_sqft_raw:
+                    floor_size = float(area_sqft_raw)
+                elif area_sqm_raw:
+                    floor_size = round(float(area_sqm_raw) * 10.764, 1)
+                else:
+                    floor_size = None
+
+                rent_raw = txn.get("rent")
+                rent = float(rent_raw) if rent_raw else None
+                psf = round(rent / floor_size, 2) if rent and floor_size else None
+
+                bedrooms_raw = txn.get("noOfBedRoom")
+                bedrooms = int(bedrooms_raw) if bedrooms_raw and str(bedrooms_raw).isdigit() else None
+
+                floor_range = txn.get("floorRange", "")
+                floor_level = None
+                fl_m = re.match(r"(\d+)-(\d+)", floor_range)
+                if fl_m:
+                    floor_level = (int(fl_m.group(1)) + int(fl_m.group(2))) // 2
+
+                lease_date = txn.get("leaseDate", "")  # YYMM format
+
+                external_id = (
+                    f"ura-rent-{project_name}-{floor_range}-{area_sqft_raw}-{lease_date}"
+                    .replace(" ", "-")
+                    .lower()
+                )
+
+                title = f"{prop_type_raw} Rental at {project_name}, {street}"
+                rent_str = f"SGD {rent:,.0f}/mth" if rent else "POA"
+                description = (
+                    f"{prop_type_raw} rental at {project_name}, {street}. "
+                    f"Floor: {floor_range}. Monthly rent: {rent_str}."
+                )
+
+                results.append({
+                    "source": "ura",
+                    "source_url": "https://www.ura.gov.sg/maps/#",
+                    "external_id": external_id,
+                    "title": title,
+                    "property_type": prop_type,
+                    "intent": "rent",
+                    "address": f"{project_name}, {street}, Singapore",
+                    "district": district_num,
+                    "asking_price": rent,
+                    "floor_size": floor_size,
+                    "psf": psf,
+                    "bedrooms": bedrooms,
+                    "floor_level": floor_level,
+                    "description": description,
+                })
+            except Exception as exc:
+                logger.debug("[ura] Rental parse error: %s", exc)
 
         return results
