@@ -25,6 +25,7 @@ from services.buyer_service import (
     upsert_buyer,
 )
 from services.ranking import get_ranked_listings
+from services.nearby import get_nearby
 import services.claude_service as claude_svc
 from sqlalchemy import select
 
@@ -63,6 +64,8 @@ Behaviour guidelines:
 - When listing properties, be concise: title, price, size (sqft), bedrooms, district.
 - Keep responses short (3–5 sentences) unless displaying listings.
 - If the user says "show me listings", "find me properties", "what's available", etc. — call search_listings or get_recommendations immediately.
+- If the user asks about what's nearby a listing (coffee shops, parks, malls, MRT, schools, dog parks, etc.) — call search_nearby_amenities. If you don't have a listing ID yet, call search_listings first to find one.
+- For nearby searches, default radius is 800m (~10 min walk). If user says "walking distance" use 800m, "short drive" use 2000m.
 - Remind users they can use /like_N, /skip_N, /view_N on individual listing cards sent by the bot.
 - For available commands, mention /recommend, /preferences, /liked, /help."""
 
@@ -140,6 +143,41 @@ TOOLS = [
                     "default": 5,
                 }
             },
+        },
+    },
+    {
+        "name": "search_nearby_amenities",
+        "description": (
+            "Search for nearby amenities around a specific property listing. "
+            "Use this when the user asks what's nearby a listing — e.g. 'is there a coffee shop near listing 5?', "
+            "'are there dog parks nearby?', 'how far is the nearest mall?', "
+            "'what schools are within walking distance?'. "
+            "Always call get_recommendations or search_listings first to know the listing ID."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "listing_id": {
+                    "type": "integer",
+                    "description": "The listing ID to search around",
+                },
+                "amenity_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "List of amenity types to search for. Examples: "
+                        "'cafe', 'coffee shop', 'hawker centre', 'mall', 'shopping mall', "
+                        "'supermarket', 'park', 'dog park', 'playground', 'gym', "
+                        "'mrt', 'bus stop', 'school', 'childcare', 'clinic', 'hospital', 'pharmacy'"
+                    ),
+                },
+                "radius_metres": {
+                    "type": "integer",
+                    "description": "Search radius in metres. Default 800 (10-min walk). Max 2000.",
+                    "default": 800,
+                },
+            },
+            "required": ["listing_id", "amenity_types"],
         },
     },
     {
@@ -242,6 +280,27 @@ async def _execute_tool(name: str, inputs: dict, telegram_id: int) -> str:
                 f"{br} · {sz} · D{listing.district or '?'} · Score {score:.0f}/100"
             )
         return "\n".join(lines)
+
+    if name == "search_nearby_amenities":
+        listing_id = inputs.get("listing_id")
+        amenity_types = inputs.get("amenity_types", [])
+        radius = inputs.get("radius_metres", 800)
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Listing).where(Listing.id == listing_id))
+            listing = result.scalar_one_or_none()
+
+        if not listing:
+            return f"Listing {listing_id} not found."
+
+        return await get_nearby(
+            address=listing.address or "",
+            postal=listing.postal_code,
+            lat=listing.latitude,
+            lng=listing.longitude,
+            amenity_types=amenity_types,
+            radius_metres=radius,
+        )
 
     if name == "search_listings":
         async with AsyncSessionLocal() as db:
