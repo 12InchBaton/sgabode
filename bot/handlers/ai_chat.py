@@ -9,25 +9,14 @@ Registered LAST in the handler registry so ConversationHandlers
 (e.g. /update) and explicit command handlers always take priority.
 """
 
-import json
 import logging
 
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
-from database import AsyncSessionLocal
-from models import Listing
-from services.buyer_service import (
-    get_active_preference,
-    get_buyer_by_telegram_id,
-    patch_preferences,
-    replace_preferences,
-    upsert_buyer,
-)
-from services.ranking import get_ranked_listings
-from services.nearby import get_nearby
 import services.claude_service as claude_svc
-from sqlalchemy import select
+from bot.tools.registry import TOOLS, execute_tool
+from services.session_service import load_history, save_history
 
 logger = logging.getLogger(__name__)
 
@@ -69,273 +58,6 @@ Behaviour guidelines:
 - Remind users they can use /like_N, /skip_N, /view_N on individual listing cards sent by the bot.
 - For available commands, mention /recommend, /preferences, /liked, /help."""
 
-TOOLS = [
-    {
-        "name": "save_profile",
-        "description": "Save the buyer's name and optional WhatsApp number. Call this as soon as you learn the user's name.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Buyer's full name"},
-                "whatsapp_number": {
-                    "type": "string",
-                    "description": "WhatsApp number with country code, e.g. +6591234567. Optional.",
-                },
-            },
-            "required": ["name"],
-        },
-    },
-    {
-        "name": "save_preferences",
-        "description": (
-            "Save or update the buyer's property search preferences. "
-            "Only include fields the user has explicitly mentioned. "
-            "Can be called multiple times as more information is collected."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "intent": {"type": "string", "enum": ["buy", "rent"]},
-                "property_types": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": ["hdb", "condo", "landed", "commercial"]},
-                },
-                "price_min": {"type": "number", "description": "Minimum price in SGD"},
-                "price_max": {"type": "number", "description": "Maximum price in SGD"},
-                "bedrooms": {
-                    "type": "array",
-                    "items": {"type": "integer"},
-                    "description": "Acceptable bedroom counts, e.g. [2, 3]",
-                },
-                "bathrooms": {"type": "array", "items": {"type": "integer"}},
-                "districts": {
-                    "type": "array",
-                    "items": {"type": "integer", "minimum": 1, "maximum": 28},
-                },
-                "mrt_distance_max": {
-                    "type": "integer",
-                    "description": "Max walking distance from nearest MRT in metres",
-                },
-                "furnishing": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": ["unfurnished", "partial", "fully"]},
-                },
-            },
-        },
-    },
-    {
-        "name": "get_buyer_profile",
-        "description": "Retrieve the buyer's current saved profile and preferences.",
-        "input_schema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "get_recommendations",
-        "description": (
-            "Get top property listings ranked for this buyer based on their saved preferences. "
-            "Use this when the user asks for recommendations or 'show me what matches'."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Number of results to return (1–10). Default 5.",
-                    "default": 5,
-                }
-            },
-        },
-    },
-    {
-        "name": "search_nearby_amenities",
-        "description": (
-            "Search for nearby amenities around a specific property listing. "
-            "Use this when the user asks what's nearby a listing — e.g. 'is there a coffee shop near listing 5?', "
-            "'are there dog parks nearby?', 'how far is the nearest mall?', "
-            "'what schools are within walking distance?'. "
-            "Always call get_recommendations or search_listings first to know the listing ID."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "listing_id": {
-                    "type": "integer",
-                    "description": "The listing ID to search around",
-                },
-                "amenity_types": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "List of amenity types to search for. Examples: "
-                        "'cafe', 'coffee shop', 'hawker centre', 'mall', 'shopping mall', "
-                        "'supermarket', 'park', 'dog park', 'playground', 'gym', "
-                        "'mrt', 'bus stop', 'school', 'childcare', 'clinic', 'hospital', 'pharmacy'"
-                    ),
-                },
-                "radius_metres": {
-                    "type": "integer",
-                    "description": "Search radius in metres. Default 800 (10-min walk). Max 2000.",
-                    "default": 800,
-                },
-            },
-            "required": ["listing_id", "amenity_types"],
-        },
-    },
-    {
-        "name": "search_listings",
-        "description": (
-            "Search active property listings with optional filters. "
-            "Use when the user asks to browse or search with specific criteria "
-            "that may differ from their saved preferences."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "intent": {"type": "string", "enum": ["buy", "rent"]},
-                "property_type": {
-                    "type": "string",
-                    "enum": ["hdb", "condo", "landed", "commercial"],
-                },
-                "max_price": {"type": "number"},
-                "min_bedrooms": {"type": "integer"},
-                "district": {"type": "integer"},
-                "limit": {"type": "integer", "default": 5},
-            },
-        },
-    },
-]
-
-
-# ── Tool implementations ──────────────────────────────────────────────────────
-
-async def _execute_tool(name: str, inputs: dict, telegram_id: int) -> str:
-    if name == "save_profile":
-        async with AsyncSessionLocal() as db:
-            await upsert_buyer(
-                db,
-                telegram_id=telegram_id,
-                name=inputs.get("name"),
-                whatsapp_number=inputs.get("whatsapp_number"),
-            )
-            await db.commit()
-        return f"Profile saved: name={inputs.get('name')!r}"
-
-    if name == "save_preferences":
-        async with AsyncSessionLocal() as db:
-            buyer = await get_buyer_by_telegram_id(db, telegram_id)
-            if not buyer:
-                buyer = await upsert_buyer(db, telegram_id=telegram_id)
-                await db.flush()
-            existing = await get_active_preference(db, buyer.id)
-            if existing:
-                await patch_preferences(db, buyer.id, **inputs)
-            else:
-                await replace_preferences(db, buyer.id, **inputs, is_active=True)
-            await db.commit()
-        return f"Preferences saved: {json.dumps(inputs)}"
-
-    if name == "get_buyer_profile":
-        async with AsyncSessionLocal() as db:
-            buyer = await get_buyer_by_telegram_id(db, telegram_id)
-            if not buyer:
-                return "No profile found — user has not registered yet."
-            pref = await get_active_preference(db, buyer.id)
-            profile: dict = {"name": buyer.name, "whatsapp_number": buyer.whatsapp_number}
-            if pref:
-                profile["preferences"] = {
-                    "intent": pref.intent,
-                    "property_types": pref.property_types,
-                    "price_min": pref.price_min,
-                    "price_max": pref.price_max,
-                    "bedrooms": pref.bedrooms,
-                    "bathrooms": pref.bathrooms,
-                    "districts": pref.districts,
-                    "mrt_distance_max": pref.mrt_distance_max,
-                    "furnishing": pref.furnishing,
-                }
-            else:
-                profile["preferences"] = None
-        return json.dumps(profile, default=str)
-
-    if name == "get_recommendations":
-        limit = min(max(inputs.get("limit", 5), 1), 10)
-        async with AsyncSessionLocal() as db:
-            buyer = await get_buyer_by_telegram_id(db, telegram_id)
-            if not buyer:
-                return "No profile found. Ask the user to share their preferences first."
-            pref = await get_active_preference(db, buyer.id)
-            if not pref:
-                return "No preferences saved yet. Collect preferences first."
-            ranked = await get_ranked_listings(db, pref, limit=limit)
-
-        if not ranked:
-            return "No listings match the current preferences."
-
-        lines = [f"Top {len(ranked)} recommendations:"]
-        for i, (listing, score) in enumerate(ranked, 1):
-            price = f"SGD {listing.asking_price:,.0f}" if listing.asking_price else "POA"
-            br = f"{listing.bedrooms}BR" if listing.bedrooms is not None else "?"
-            sz = f"{listing.floor_size:,.0f} sqft" if listing.floor_size else "? sqft"
-            lines.append(
-                f"{i}. {listing.title or 'Listing'} — {price} · "
-                f"{br} · {sz} · D{listing.district or '?'} · Score {score:.0f}/100"
-            )
-        return "\n".join(lines)
-
-    if name == "search_nearby_amenities":
-        listing_id = inputs.get("listing_id")
-        amenity_types = inputs.get("amenity_types", [])
-        radius = inputs.get("radius_metres", 800)
-
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(select(Listing).where(Listing.id == listing_id))
-            listing = result.scalar_one_or_none()
-
-        if not listing:
-            return f"Listing {listing_id} not found."
-
-        return await get_nearby(
-            address=listing.address or "",
-            postal=listing.postal_code,
-            lat=listing.latitude,
-            lng=listing.longitude,
-            amenity_types=amenity_types,
-            radius_metres=radius,
-        )
-
-    if name == "search_listings":
-        async with AsyncSessionLocal() as db:
-            q = select(Listing).where(Listing.status == "active")
-            if inputs.get("intent"):
-                q = q.where(Listing.intent == inputs["intent"])
-            if inputs.get("property_type"):
-                q = q.where(Listing.property_type == inputs["property_type"])
-            if inputs.get("max_price"):
-                q = q.where(Listing.asking_price <= inputs["max_price"])
-            if inputs.get("min_bedrooms"):
-                q = q.where(Listing.bedrooms >= inputs["min_bedrooms"])
-            if inputs.get("district"):
-                q = q.where(Listing.district == inputs["district"])
-            q = q.limit(inputs.get("limit", 5))
-            result = await db.execute(q)
-            listings = result.scalars().all()
-
-        if not listings:
-            return "No active listings found for those criteria."
-
-        lines = [f"Found {len(listings)} listing(s):"]
-        for lst in listings:
-            price = f"SGD {lst.asking_price:,.0f}" if lst.asking_price else "POA"
-            br = f"{lst.bedrooms}BR" if lst.bedrooms is not None else "?"
-            sz = f"{lst.floor_size:,.0f} sqft" if lst.floor_size else "? sqft"
-            lines.append(
-                f"• {lst.title or 'Listing'} — {price} · "
-                f"{br} · {sz} · D{lst.district or '?'}"
-            )
-        return "\n".join(lines)
-
-    return f"Unknown tool: {name!r}"
-
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _safe_trim(messages: list[dict], max_len: int) -> list[dict]:
@@ -365,7 +87,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not user_text:
         return
 
-    history: list[dict] = context.user_data.setdefault("ai_history", [])
+    # Load history: use in-memory cache if available, else restore from DB (survives restarts).
+    if "ai_history" not in context.user_data:
+        context.user_data["ai_history"] = await load_history(telegram_id)
+
+    history: list[dict] = context.user_data["ai_history"]
     history.append({"role": "user", "content": user_text})
 
     # The Anthropic API requires the first message to be from the user.
@@ -378,7 +104,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     async def tool_executor(tool_name: str, tool_input: dict) -> str:
-        return await _execute_tool(tool_name, tool_input, telegram_id)
+        return await execute_tool(tool_name, tool_input, telegram_id)
 
     try:
         reply, updated_history = await claude_svc.run_chat_turn(
@@ -387,9 +113,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             system=SYSTEM_PROMPT,
             tool_executor=tool_executor,
         )
-        # Trim history safely: never split a tool-use/tool-result exchange.
-        # Always start from a "user" message (not a tool_result payload).
-        context.user_data["ai_history"] = _safe_trim(updated_history, MAX_HISTORY)
+        # Trim safely — never split a tool-use/tool-result pair.
+        trimmed = _safe_trim(updated_history, MAX_HISTORY)
+        context.user_data["ai_history"] = trimmed
+
+        # Persist to DB so history survives bot restarts and redeployments.
+        await save_history(telegram_id, trimmed)
 
         if reply:
             await update.message.reply_text(reply)

@@ -191,6 +191,19 @@ class ViewingRequest(Base):
     agent = relationship("Agent", back_populates="viewing_requests")
 
 
+class BuyerSession(Base):
+    """Persists the AI conversation history per buyer across bot restarts."""
+    __tablename__ = "buyer_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    # Stored as JSON string — list of {"role": ..., "content": ...} dicts
+    history = Column(Text, default="[]")
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ListingPayment(Base):
     __tablename__ = "listing_payments"
 

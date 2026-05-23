@@ -13,6 +13,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
+from deps import AdminKey
 from services.scrapers.runner import ALL_SCRAPERS, run_all_scrapers, run_scraper
 from services.scrapers.scheduler import get_scheduler
 
@@ -25,8 +26,8 @@ _SCRAPER_MAP = {cls().source: cls for cls in ALL_SCRAPERS}
 
 
 @router.post("/run")
-async def trigger_all(background_tasks: BackgroundTasks):
-    """Queue a full scrape of all sources in the background."""
+async def trigger_all(background_tasks: BackgroundTasks, _: AdminKey):
+    """Queue a full scrape of all sources in the background. Requires X-Admin-Key header."""
     background_tasks.add_task(run_all_scrapers)
     return {
         "status": "queued",
@@ -36,8 +37,8 @@ async def trigger_all(background_tasks: BackgroundTasks):
 
 
 @router.post("/run/{source}")
-async def trigger_one(source: str, background_tasks: BackgroundTasks):
-    """Queue a scrape for a single source in the background."""
+async def trigger_one(source: str, background_tasks: BackgroundTasks, _: AdminKey):
+    """Queue a scrape for a single source in the background. Requires X-Admin-Key header."""
     scraper_class = _SCRAPER_MAP.get(source)
     if not scraper_class:
         raise HTTPException(
@@ -49,11 +50,8 @@ async def trigger_one(source: str, background_tasks: BackgroundTasks):
 
 
 @router.post("/run/{source}/now")
-async def trigger_one_inline(source: str):
-    """
-    Run a single scraper inline and return the result immediately.
-    Useful for testing — use /run/{source} for production triggers.
-    """
+async def trigger_one_inline(source: str, _: AdminKey):
+    """Run a single scraper inline and return results. Requires X-Admin-Key header."""
     scraper_class = _SCRAPER_MAP.get(source)
     if not scraper_class:
         raise HTTPException(
@@ -66,8 +64,8 @@ async def trigger_one_inline(source: str):
 
 
 @router.get("/schedule")
-async def get_schedule():
-    """Show all scheduled jobs and their next run times."""
+async def get_schedule(_: AdminKey):
+    """Show all scheduled jobs and their next run times. Requires X-Admin-Key header."""
     scheduler = get_scheduler()
     jobs = []
     for job in scheduler.get_jobs():
@@ -85,8 +83,8 @@ async def get_schedule():
 
 
 @router.get("/sources")
-async def list_sources():
-    """List all registered scraper sources."""
+async def list_sources(_: AdminKey):
+    """List all registered scraper sources. Requires X-Admin-Key header."""
     return {
         "sources": [
             {

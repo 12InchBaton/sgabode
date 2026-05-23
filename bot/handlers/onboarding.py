@@ -10,6 +10,8 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+from services.session_service import clear_history
+
 logger = logging.getLogger(__name__)
 
 _WELCOME = (
@@ -22,13 +24,19 @@ _WELCOME = (
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Reset conversation history and greet the user."""
+    telegram_id = update.effective_user.id
     context.user_data.clear()
-    # Seed history as a user→assistant pair. The Anthropic API requires the first
-    # message to be from the user, so we use a synthetic opener.
-    context.user_data["ai_history"] = [
+
+    # Clear persisted history in DB so fresh conversation starts clean
+    await clear_history(telegram_id)
+
+    # Seed in-memory history as a user→assistant pair.
+    # The Anthropic API requires the first message to be from the user.
+    seed = [
         {"role": "user", "content": "Hello, I want to find a property in Singapore."},
         {"role": "assistant", "content": [{"type": "text", "text": _WELCOME}]},
     ]
+    context.user_data["ai_history"] = seed
     await update.message.reply_text(_WELCOME, parse_mode="Markdown")
 
 

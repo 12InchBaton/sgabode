@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     API_BASE_URL: str = "http://localhost:8000"
     LISTING_BOOST_PRICE: int = 4900  # cents
 
+    # Admin API key — required to call /scraper/* and other admin routes.
+    # Set a long random string in your .env. Generate with:
+    #   python -c "import secrets; print(secrets.token_hex(32))"
+    ADMIN_API_KEY: str = ""
+
     class Config:
         env_file = ".env"
         extra = "ignore"
