@@ -92,7 +92,7 @@ async def recommend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         district_str = f"D{listing.district}" if listing.district else "?"
 
         card = (
-            f"*#{rank} — {listing.title}*\n"
+            f"*#{rank} — {listing.title or 'Listing'}*\n"
             f"💰 {price_str}{psf_str}\n"
             f"📐 {size_str}  🛏 {br_str}\n"
             f"📍 {district_str} · {listing.address or '—'}\n"

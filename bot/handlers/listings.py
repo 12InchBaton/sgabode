@@ -17,21 +17,6 @@ from sqlalchemy import select
 logger = logging.getLogger(__name__)
 
 
-# ── Shared DB helper ──────────────────────────────────────────────────────────
-
-async def _get_match_for_user(telegram_id: int, match_id: int):
-    """Return (buyer, match) or (None, None) if not found / not owned."""
-    async with AsyncSessionLocal() as db:
-        buyer_result = await db.execute(select(Buyer).where(Buyer.telegram_id == telegram_id))
-        buyer = buyer_result.scalar_one_or_none()
-        if not buyer:
-            return None, None, db
-        match_result = await db.execute(
-            select(Match).where(Match.id == match_id, Match.buyer_id == buyer.id)
-        )
-        return buyer, match_result.scalar_one_or_none(), db
-
-
 # ── /like_N ───────────────────────────────────────────────────────────────────
 
 async def like_listing(update: Update, context: ContextTypes.DEFAULT_TYPE):

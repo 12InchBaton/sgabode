@@ -192,6 +192,69 @@ async def generate_unit_card_caption(listing: dict, match_id: int) -> str:
     return "\n".join(lines)
 
 
+async def run_chat_turn(
+    messages: list[dict],
+    tools: list[dict],
+    system: str,
+    tool_executor,  # async callable(name: str, input: dict) -> str
+) -> tuple[str, list[dict]]:
+    """
+    Run one chat turn with tool use, looping until Claude stops calling tools.
+
+    Returns (final_text_response, full_updated_messages_list).
+    The returned messages list is serialisation-safe (plain dicts only).
+    """
+    updated = list(messages)
+    MAX_TOOL_ROUNDS = 8  # prevent infinite tool loops
+
+    for _round in range(MAX_TOOL_ROUNDS + 1):
+        response = await _client.messages.create(
+            model=MODEL,
+            max_tokens=1000,
+            system=system,
+            tools=tools,
+            messages=updated,
+        )
+
+        # Convert SDK objects → plain dicts so they can be stored in user_data
+        content_blocks: list[dict] = []
+        for block in response.content:
+            if block.type == "text":
+                content_blocks.append({"type": "text", "text": block.text})
+            elif block.type == "tool_use":
+                content_blocks.append(
+                    {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
+                )
+
+        updated.append({"role": "assistant", "content": content_blocks})
+
+        tool_uses = [b for b in content_blocks if b["type"] == "tool_use"]
+
+        # Exit when Claude is done or there are no more tool calls
+        if not tool_uses or response.stop_reason == "end_turn":
+            text = "\n".join(b["text"] for b in content_blocks if b["type"] == "text")
+            return text.strip(), updated
+
+        # Safety exit after max rounds — return whatever text exists so far
+        if _round >= MAX_TOOL_ROUNDS:
+            logger.warning("run_chat_turn hit MAX_TOOL_ROUNDS (%d); returning partial response", MAX_TOOL_ROUNDS)
+            text = "\n".join(b["text"] for b in content_blocks if b["type"] == "text")
+            return text.strip() or "I'm having trouble processing that request. Please try again.", updated
+
+        # Execute every tool call and collect results
+        tool_results: list[dict] = []
+        for tu in tool_uses:
+            try:
+                result = await tool_executor(tu["name"], tu["input"])
+            except Exception as exc:
+                result = f"Tool error: {exc}"
+            tool_results.append(
+                {"type": "tool_result", "tool_use_id": tu["id"], "content": str(result)}
+            )
+
+        updated.append({"role": "user", "content": tool_results})
+
+
 async def generate_recommendation_reason(
     listing: dict, pref: dict, rank: int
 ) -> str:

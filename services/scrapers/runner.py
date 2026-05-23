@@ -23,6 +23,7 @@ from services.scrapers.hdb import HDBPortalScraper
 from services.scrapers.hdb_rental import HDBRentalScraper
 from services.scrapers.ninetyco import NinetyCoScraper
 from services.scrapers.propertyguru import PropertyGuruScraper
+from services.scrapers.srx import SRXScraper
 from services.scrapers.ura import URAScraper
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ ALL_SCRAPERS: list = [
     HDBPortalScraper,
     HDBRentalScraper,
     URAScraper,
+    SRXScraper,
     NinetyCoScraper,
     PropertyGuruScraper,
 ]
