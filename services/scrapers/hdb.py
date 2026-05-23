@@ -65,38 +65,48 @@ class HDBPortalScraper:
         return all_listings
 
     async def _fetch_dataset(self, client: httpx.AsyncClient, resource_id: str) -> list[dict]:
-        """Fetch up to 100 most recent records from one dataset."""
+        """Fetch up to 2000 most recent records from one dataset (paginated)."""
         results = []
-        try:
-            resp = await client.get(
-                _API_BASE,
-                params={
-                    "resource_id": resource_id,
-                    "limit": 100,
-                    "sort": "_id desc",  # most recent first
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        limit = 100
+        max_records = 2000
 
-            if data.get("success") is False:
-                logger.warning("[hdb] API returned success=False for %s: %s", resource_id, data)
-                return []
+        for offset in range(0, max_records, limit):
+            try:
+                resp = await client.get(
+                    _API_BASE,
+                    params={
+                        "resource_id": resource_id,
+                        "limit": limit,
+                        "offset": offset,
+                        "sort": "_id desc",  # most recent first
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
 
-            records = data.get("result", {}).get("records", [])
-            if not records:
-                logger.warning("[hdb] No records in dataset %s", resource_id)
-                return []
+                if data.get("success") is False:
+                    logger.warning("[hdb] API returned success=False for %s: %s", resource_id, data)
+                    break
 
-            for rec in records:
-                listing = self._parse_record(rec)
-                if listing:
-                    results.append(listing)
+                records = data.get("result", {}).get("records", [])
+                if not records:
+                    break  # no more data
 
-        except httpx.HTTPStatusError as exc:
-            logger.error("[hdb] HTTP error for dataset %s: %s", resource_id, exc)
-        except Exception as exc:
-            logger.error("[hdb] Failed to fetch dataset %s: %s", resource_id, exc)
+                for rec in records:
+                    listing = self._parse_record(rec)
+                    if listing:
+                        results.append(listing)
+
+                # Stop early if fewer records than limit (last page)
+                if len(records) < limit:
+                    break
+
+            except httpx.HTTPStatusError as exc:
+                logger.error("[hdb] HTTP error for dataset %s offset %d: %s", resource_id, offset, exc)
+                break
+            except Exception as exc:
+                logger.error("[hdb] Failed to fetch dataset %s offset %d: %s", resource_id, offset, exc)
+                break
 
         return results
 

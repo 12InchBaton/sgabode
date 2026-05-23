@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(xargs wc:*)"
+      "Bash(xargs wc:*)",
+      "Bash(py -3 -m pip show uvicorn)",
+      "Bash(py -3 -m uvicorn --version)"
     ]
   }
 }
