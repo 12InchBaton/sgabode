@@ -20,7 +20,7 @@ from services.scrapers.utils import postal_to_district
 
 logger = logging.getLogger(__name__)
 
-_URA_BASE = "https://www.ura.gov.sg/uraDataService"
+_URA_BASE = "https://eservice.ura.gov.sg/uraDataService"
 
 _PROP_TYPE_MAP = {
     "Condominium":            "condo",
