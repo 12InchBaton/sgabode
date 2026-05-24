@@ -1,185 +1,149 @@
 """
-HDB scraper — uses the official data.gov.sg API.
+HDB Price Trend Scraper — uses the official data.gov.sg API.
 
-No Playwright needed — pure httpx API calls.
-Overrides BaseScraper.run() entirely.
+Fetches historical resale transactions (NOT active listings — those are
+already sold) and computes median price/PSF per town and flat type.
 
-Datasets used (multiple to get full coverage):
-  - Resale flat prices from 2017 onwards
-  - Resale flat prices 2015-2016
+Results are stored in the `district_price_trends` table and used by the
+bot to answer price trend questions like "what do 4-room HDBs cost in Bishan?".
+
+Active HDB for-sale listings come from SRX and 99.co scrapers instead.
 """
 
+import asyncio
 import logging
-import re
+import statistics
 
 import httpx
 
-from services.scrapers.utils import postal_to_district, town_to_district
+from services.scrapers.utils import town_to_district
 
 logger = logging.getLogger(__name__)
 
-# data.gov.sg resource IDs for HDB resale prices
-# Multiple datasets cover different year ranges
 _DATASETS = [
     # Resale flat prices from Jan 2017 onwards (most current)
     "d_8b84c4ee58e3cfc0ece0d773c8ca6abc",
-    # Resale flat prices Jan 2015 - Dec 2016
-    "d_ea9ed51da2787afaf8e51f7e75f84abb",
 ]
 
 _API_BASE = "https://data.gov.sg/api/action/datastore_search"
 
+_ALL_TOWNS = [
+    "ANG MO KIO", "BEDOK", "BISHAN", "BUKIT BATOK", "BUKIT MERAH",
+    "BUKIT PANJANG", "BUKIT TIMAH", "CENTRAL AREA", "CHOA CHU KANG",
+    "CLEMENTI", "GEYLANG", "HOUGANG", "JURONG EAST", "JURONG WEST",
+    "KALLANG/WHAMPOA", "MARINE PARADE", "PASIR RIS", "PUNGGOL",
+    "QUEENSTOWN", "SEMBAWANG", "SENGKANG", "SERANGOON", "TAMPINES",
+    "TOA PAYOH", "WOODLANDS", "YISHUN",
+]
+
 _FLAT_TYPE_MAP = {
-    "1 ROOM":          (1, "hdb"),
-    "2 ROOM":          (2, "hdb"),
-    "3 ROOM":          (3, "hdb"),
-    "4 ROOM":          (4, "hdb"),
-    "5 ROOM":          (5, "hdb"),
-    "EXECUTIVE":       (5, "hdb"),
-    "MULTI-GENERATION":(6, "hdb"),
+    "1 ROOM":           1,
+    "2 ROOM":           2,
+    "3 ROOM":           3,
+    "4 ROOM":           4,
+    "5 ROOM":           5,
+    "EXECUTIVE":        5,
+    "MULTI-GENERATION": 6,
 }
 
+# Fetch last N months of transactions per town for trend accuracy
+MONTHS_LOOKBACK = 12
+RECORDS_PER_TOWN = 200  # enough to compute meaningful medians
 
-class HDBPortalScraper:
+
+class HDBTrendScraper:
     """
-    Fetches HDB resale transactions from data.gov.sg.
-    Does NOT use Playwright — pure API.
+    Fetches HDB resale transactions and stores aggregated price trends.
+    Does NOT insert into the listings table.
     """
 
-    source = "hdb"
+    source = "hdb_trend"
     start_urls = ["https://data.gov.sg/datasets/d_8b84c4ee58e3cfc0ece0d773c8ca6abc/view"]
 
     async def run(self) -> list[dict]:
-        """Fetch from data.gov.sg API and return list of listing dicts."""
-        all_listings: list[dict] = []
+        """
+        Fetch transactions, compute medians per town+flat_type, return as dicts.
+        The runner calls upsert on district_price_trends instead of listings.
+        """
+        # Collect raw transactions per town
+        town_data: dict[str, list[dict]] = {t: [] for t in _ALL_TOWNS}
 
         async with httpx.AsyncClient(timeout=30) as client:
-            for resource_id in _DATASETS:
-                listings = await self._fetch_dataset(client, resource_id)
-                all_listings.extend(listings)
-                logger.info(
-                    "[hdb] Dataset %s: %d records fetched", resource_id, len(listings)
-                )
+            for town in _ALL_TOWNS:
+                records = await self._fetch_town(client, town)
+                town_data[town] = records
+                await asyncio.sleep(0.3)
 
-        logger.info("[hdb] Total: %d listings fetched", len(all_listings))
-        return all_listings
+        # Compute trends
+        trends = []
+        for town, records in town_data.items():
+            if not records:
+                continue
+            by_flat: dict[str, list[dict]] = {}
+            for r in records:
+                ft = r.get("flat_type", "").upper().strip()
+                by_flat.setdefault(ft, []).append(r)
 
-    async def _fetch_dataset(self, client: httpx.AsyncClient, resource_id: str) -> list[dict]:
-        """Fetch up to 2000 most recent records from one dataset (paginated)."""
-        results = []
-        limit = 100
-        max_records = 2000
+            for flat_type, txns in by_flat.items():
+                prices = []
+                psfs = []
+                months = []
+                for t in txns:
+                    try:
+                        price = float(t.get("resale_price", 0))
+                        sqm = float(t.get("floor_area_sqm", 0))
+                        if price > 0 and sqm > 0:
+                            sqft = sqm * 10.764
+                            prices.append(price)
+                            psfs.append(round(price / sqft, 2))
+                        month = t.get("month", "")
+                        if month:
+                            months.append(month)
+                    except (ValueError, TypeError):
+                        continue
 
-        for offset in range(0, max_records, limit):
-            try:
-                resp = await client.get(
-                    _API_BASE,
-                    params={
-                        "resource_id": resource_id,
-                        "limit": limit,
-                        "offset": offset,
-                        "sort": "_id desc",  # most recent first
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
+                if not prices:
+                    continue
 
-                if data.get("success") is False:
-                    logger.warning("[hdb] API returned success=False for %s: %s", resource_id, data)
-                    break
+                months_sorted = sorted(months)
+                trends.append({
+                    "town": town,
+                    "district": town_to_district(town),
+                    "flat_type": flat_type,
+                    "bedrooms": _FLAT_TYPE_MAP.get(flat_type),
+                    "sample_size": len(prices),
+                    "median_price": round(statistics.median(prices)),
+                    "median_psf": round(statistics.median(psfs), 2),
+                    "min_price": round(min(prices)),
+                    "max_price": round(max(prices)),
+                    "period_start": months_sorted[0] if months_sorted else None,
+                    "period_end": months_sorted[-1] if months_sorted else None,
+                })
 
-                records = data.get("result", {}).get("records", [])
-                if not records:
-                    break  # no more data
+        logger.info("[hdb_trend] Computed %d town+flat_type trends", len(trends))
+        return trends
 
-                for rec in records:
-                    listing = self._parse_record(rec)
-                    if listing:
-                        results.append(listing)
-
-                # Stop early if fewer records than limit (last page)
-                if len(records) < limit:
-                    break
-
-            except httpx.HTTPStatusError as exc:
-                logger.error("[hdb] HTTP error for dataset %s offset %d: %s", resource_id, offset, exc)
-                break
-            except Exception as exc:
-                logger.error("[hdb] Failed to fetch dataset %s offset %d: %s", resource_id, offset, exc)
-                break
-
-        return results
-
-    def _parse_record(self, rec: dict) -> dict | None:
+    async def _fetch_town(self, client: httpx.AsyncClient, town: str) -> list[dict]:
+        """Fetch up to RECORDS_PER_TOWN most recent transactions for a town."""
         try:
-            flat_type = rec.get("flat_type", "").upper().strip()
-            bedrooms, prop_type = _FLAT_TYPE_MAP.get(flat_type, (None, "hdb"))
-
-            town = rec.get("town", "").strip()
-            street = rec.get("street_name", "").strip()
-            block = rec.get("block", "").strip()
-            postal = str(rec.get("postal_code", "") or "").strip()
-            floor_area_sqm = rec.get("floor_area_sqm")
-            resale_price = rec.get("resale_price")
-            storey_range = rec.get("storey_range", "")
-            lease_commence = rec.get("lease_commence_date")
-            month = rec.get("month", "")
-            flat_model = rec.get("flat_model", "").strip()
-            remaining_lease = rec.get("remaining_lease", "")
-
-            if not town and not street:
-                return None
-
-            address = f"Blk {block} {street}, {town}, Singapore {postal}".strip(", ")
-            floor_size_sqft = round(float(floor_area_sqm) * 10.764, 1) if floor_area_sqm else None
-            price = float(resale_price) if resale_price else None
-            psf = round(price / floor_size_sqft, 2) if price and floor_size_sqft else None
-            district = postal_to_district(postal) if postal else town_to_district(town)
-
-            # Parse storey range midpoint e.g. "07 TO 09" → 8
-            floor_level = None
-            m = re.match(r"(\d+)\s+TO\s+(\d+)", storey_range)
-            if m:
-                floor_level = (int(m.group(1)) + int(m.group(2))) // 2
-
-            external_id = (
-                f"hdb-{block}-{street}-{flat_type}-{month}"
-                .replace(" ", "-")
-                .lower()
+            resp = await client.get(
+                _API_BASE,
+                params={
+                    "resource_id": _DATASETS[0],
+                    "limit": RECORDS_PER_TOWN,
+                    "sort": "_id desc",
+                    "filters": f'{{"town": "{town}"}}',
+                },
             )
-
-            title = f"{flat_type.title()} HDB at {street.title()}, {town.title()}"
-            if flat_model:
-                title += f" ({flat_model.title()})"
-
-            description = (
-                f"{flat_type.title()} HDB resale flat in {town.title()}. "
-                f"Floor area: {floor_area_sqm} sqm ({floor_size_sqft} sqft). "
-                f"Storey: {storey_range}. "
-            )
-            if remaining_lease:
-                description += f"Remaining lease: {remaining_lease}."
-
-            return {
-                "source": self.source,
-                "source_url": "https://homes.hdb.gov.sg/home/finding-a-flat",
-                "external_id": external_id,
-                "title": title,
-                "property_type": prop_type,
-                "intent": "buy",
-                "address": address,
-                "postal_code": postal or None,
-                "district": district,
-                "asking_price": price,
-                "floor_size": floor_size_sqft,
-                "bedrooms": bedrooms,
-                "psf": psf,
-                "floor_level": floor_level,
-                "build_year": int(lease_commence) if lease_commence else None,
-                "tenure": "99-year",
-                "description": description,
-            }
-
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("success") is False:
+                return []
+            return data.get("result", {}).get("records", [])
         except Exception as exc:
-            logger.debug("[hdb] Record parse error: %s | record: %s", exc, rec)
-            return None
+            logger.error("[hdb_trend] Fetch error for town=%s: %s", town, exc)
+            return []
+
+
+# Keep HDBPortalScraper as an alias so runner.py import doesn't break
+HDBPortalScraper = HDBTrendScraper

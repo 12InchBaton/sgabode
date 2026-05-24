@@ -14,6 +14,7 @@ from bot.tools import (
     get_recommendations,
     search_listings,
     search_nearby_amenities,
+    get_price_trends,
 )
 
 TOOL_MODULES = [
@@ -23,6 +24,7 @@ TOOL_MODULES = [
     get_recommendations,
     search_listings,
     search_nearby_amenities,
+    get_price_trends,
 ]
 
 # Built for ai_chat.py consumption

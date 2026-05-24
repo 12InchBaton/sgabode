@@ -191,6 +191,31 @@ class ViewingRequest(Base):
     agent = relationship("Agent", back_populates="viewing_requests")
 
 
+class DistrictPriceTrend(Base):
+    """
+    Aggregated price trend per district/town/bedroom from historical HDB transactions.
+    Populated by the HDB trend scraper — NOT used for active listings.
+    """
+    __tablename__ = "district_price_trends"
+    __table_args__ = (
+        UniqueConstraint("town", "flat_type", name="uq_trend_town_flat"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    town = Column(String(100), nullable=False, index=True)       # e.g. "BISHAN"
+    district = Column(Integer, index=True)                        # e.g. 20
+    flat_type = Column(String(50), nullable=False)                # e.g. "4 ROOM"
+    bedrooms = Column(Integer)                                    # e.g. 4
+    sample_size = Column(Integer)                                 # number of transactions
+    median_price = Column(Float)                                  # SGD
+    median_psf = Column(Float)                                    # SGD/sqft
+    min_price = Column(Float)
+    max_price = Column(Float)
+    period_start = Column(String(10))                             # e.g. "2024-01"
+    period_end = Column(String(10))                               # e.g. "2024-12"
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class BuyerSession(Base):
     """Persists the AI conversation history per buyer across bot restarts."""
     __tablename__ = "buyer_sessions"

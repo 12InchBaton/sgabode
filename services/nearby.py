@@ -73,22 +73,40 @@ _AMENITY_MAP: dict[str, list[tuple[str, str]]] = {
 
 
 async def _geocode_onemap(address: str, postal: Optional[str] = None) -> Optional[tuple[float, float]]:
-    """Return (lat, lng) for a Singapore address using OneMap API."""
-    search_val = postal or address
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                _ONEMAP_SEARCH,
-                params={"searchVal": search_val, "returnGeom": "Y", "getAddrDetails": "Y", "pageNum": 1},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            results = data.get("results", [])
-            if results:
-                r = results[0]
-                return float(r["LATITUDE"]), float(r["LONGITUDE"])
-    except Exception as exc:
-        logger.warning("OneMap geocode failed for %r: %s", search_val, exc)
+    """
+    Return (lat, lng) for a Singapore address using OneMap API.
+    Tries in order: postal code → full address → street+town only.
+    """
+    candidates = []
+    if postal and len(postal) == 6 and postal.isdigit():
+        candidates.append(postal)
+    if address:
+        candidates.append(address)
+        # Also try just the street name (strip "Blk XX" prefix common in HDB addresses)
+        import re
+        street_only = re.sub(r"^Blk\s+\w+\s+", "", address, flags=re.IGNORECASE).split(",")[0].strip()
+        if street_only and street_only != address:
+            candidates.append(street_only)
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        for search_val in candidates:
+            try:
+                resp = await client.get(
+                    _ONEMAP_SEARCH,
+                    params={"searchVal": search_val, "returnGeom": "Y", "getAddrDetails": "Y", "pageNum": 1},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                results = data.get("results", [])
+                if results:
+                    r = results[0]
+                    lat, lng = float(r["LATITUDE"]), float(r["LONGITUDE"])
+                    # Sanity check — Singapore bounding box
+                    if 1.15 <= lat <= 1.50 and 103.6 <= lng <= 104.1:
+                        logger.info("OneMap geocoded %r → (%.5f, %.5f)", search_val, lat, lng)
+                        return lat, lng
+            except Exception as exc:
+                logger.warning("OneMap geocode failed for %r: %s", search_val, exc)
     return None
 
 
@@ -156,7 +174,10 @@ async def get_nearby(
         coords = await _geocode_onemap(address, postal)
 
     if not coords:
-        return "Could not determine the property location for nearby search."
+        return (
+            f"TOOL_ERROR: Could not geocode the property address ({address!r}, postal={postal!r}). "
+            "Tell the user the nearby search failed and suggest they check Google Maps directly."
+        )
 
     clat, clng = coords
     radius_metres = min(radius_metres, 2000)  # cap at 2km
