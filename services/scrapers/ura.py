@@ -20,7 +20,7 @@ from services.scrapers.utils import postal_to_district
 
 logger = logging.getLogger(__name__)
 
-_URA_BASE = "https://www.ura.gov.sg/uraDataService"
+_URA_BASE = "https://eservice.ura.gov.sg/uraDataService"
 
 _PROP_TYPE_MAP = {
     "Condominium":            "condo",
@@ -62,6 +62,11 @@ class URAScraper:
                 params={"accesskey": access_key},
             )
             resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "")
+            if "json" not in content_type:
+                logger.error("[ura] Token endpoint returned non-JSON (WAF/HTML block?): status=%d ct=%s body=%s",
+                             resp.status_code, content_type, resp.text[:200])
+                return None
             data = resp.json()
             if data.get("Status") == "Success":
                 token = data.get("Result")
