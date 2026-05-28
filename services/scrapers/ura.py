@@ -47,7 +47,19 @@ class URAScraper:
             logger.warning("[ura] URA_ACCESS_KEY not configured — skipping")
             return []
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-SG,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Referer": "https://eservice.ura.gov.sg/maps/api/",
+        }
+        async with httpx.AsyncClient(timeout=30, headers=headers) as client:
             token = await self._get_token(client, access_key)
             if not token:
                 return []
