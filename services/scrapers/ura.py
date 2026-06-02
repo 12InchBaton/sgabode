@@ -1,19 +1,21 @@
 """
-URA Private Residential Property scraper — URA Data Service API.
+URA Private Residential Property scraper — URA Data Service API v1.
 
 Requires URA_ACCESS_KEY env var.
-Free registration: https://www.ura.gov.sg/maps/api/
+Free registration: https://eservice.ura.gov.sg/maps/api/reg.html
 
 API flow:
-  1. GET insertNewToken.action              → daily token
-  2. GET invokeUraDS?service=PMI_Resi_Transaction&batch=1  → sale transactions
-  3. GET invokeUraDS?service=PMI_Resi_Rental&batch=1       → rental contracts
+  1. GET insertNewToken/v1              → daily token
+  2. GET invokeUraDS/v1?service=PMI_Resi_Transaction&batch=1  → sale transactions
+  3. GET invokeUraDS/v1?service=PMI_Resi_Rental&batch=1       → rental contracts
+
+Uses curl_cffi to bypass WAF (Nexusguard TLS fingerprint check).
 """
 
 import logging
 import re
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 from config import settings
 from services.scrapers.utils import postal_to_district
@@ -39,7 +41,7 @@ class URAScraper:
     """Fetches private residential property transactions from the URA Data Service API."""
 
     source = "ura"
-    start_urls = ["https://www.ura.gov.sg/maps/api/"]
+    start_urls = ["https://eservice.ura.gov.sg/maps/api/"]
 
     async def run(self) -> list[dict]:
         access_key = getattr(settings, "URA_ACCESS_KEY", None)
@@ -47,19 +49,7 @@ class URAScraper:
             logger.warning("[ura] URA_ACCESS_KEY not configured — skipping")
             return []
 
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-SG,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Referer": "https://eservice.ura.gov.sg/maps/api/",
-        }
-        async with httpx.AsyncClient(timeout=30, headers=headers) as client:
+        async with AsyncSession(impersonate="chrome120", timeout=30) as client:
             token = await self._get_token(client, access_key)
             if not token:
                 return []
@@ -67,16 +57,15 @@ class URAScraper:
             rentals = await self._fetch_rentals(client, access_key, token)
             return sales + rentals
 
-    async def _get_token(self, client: httpx.AsyncClient, access_key: str) -> str | None:
+    async def _get_token(self, client: AsyncSession, access_key: str) -> str | None:
         try:
             resp = await client.get(
-                f"{_URA_BASE}/insertNewToken.action",
+                f"{_URA_BASE}/insertNewToken/v1",
                 params={"accesskey": access_key},
             )
-            resp.raise_for_status()
             content_type = resp.headers.get("content-type", "")
             if "json" not in content_type:
-                logger.error("[ura] Token endpoint returned non-JSON (WAF/HTML block?): status=%d ct=%s body=%s",
+                logger.error("[ura] Token endpoint returned non-JSON (WAF block?): status=%d ct=%s body=%s",
                              resp.status_code, content_type, resp.text[:200])
                 return None
             data = resp.json()
@@ -91,16 +80,15 @@ class URAScraper:
             return None
 
     async def _fetch_transactions(
-        self, client: httpx.AsyncClient, access_key: str, token: str
+        self, client: AsyncSession, access_key: str, token: str
     ) -> list[dict]:
         results = []
         try:
             resp = await client.get(
-                f"{_URA_BASE}/invokeUraDS",
+                f"{_URA_BASE}/invokeUraDS/v1",
                 params={"service": "PMI_Resi_Transaction", "batch": "1"},
                 headers={"AccessKey": access_key, "Token": token},
             )
-            resp.raise_for_status()
             data = resp.json()
 
             if data.get("Status") != "Success":
@@ -113,7 +101,6 @@ class URAScraper:
         except Exception as exc:
             logger.error("[ura] Fetch error: %s", exc)
 
-        # Keep only 100 most recent (already newest-first from API)
         results = results[:100]
         logger.info("[ura] %d transaction records fetched", len(results))
         return results
@@ -149,7 +136,6 @@ class URAScraper:
                 else:
                     tenure = "99-year"
 
-                # Extract lease start year from tenure string e.g. "99 yrs lease commencing from 1996"
                 build_year = None
                 yr_m = re.search(r"from\s+(\d{4})", tenure_raw)
                 if yr_m:
@@ -161,11 +147,10 @@ class URAScraper:
                 if fl_m:
                     floor_level = (int(fl_m.group(1)) + int(fl_m.group(2))) // 2
 
-                contract_date = txn.get("contractDate", "")  # YYMM
+                contract_date = txn.get("contractDate", "")
                 type_of_sale_code = str(txn.get("typeOfSale", "3"))
                 type_labels = {"1": "New Sale", "2": "Sub Sale", "3": "Resale"}
                 type_label = type_labels.get(type_of_sale_code, "Resale")
-                intent = "buy"
 
                 external_id = (
                     f"ura-{project_name}-{floor_range}-{area_sqm}-{contract_date}"
@@ -173,19 +158,13 @@ class URAScraper:
                     .lower()
                 )
 
-                title = f"{prop_type_raw} at {project_name}, {street}"
-                description = (
-                    f"{prop_type_raw} transaction at {project_name}, {street}. "
-                    f"{type_label}. Floor: {floor_range}. Tenure: {tenure_raw}."
-                )
-
                 results.append({
                     "source": "ura",
-                    "source_url": "https://www.ura.gov.sg/maps/#",
+                    "source_url": "https://eservice.ura.gov.sg/maps/#",
                     "external_id": external_id,
-                    "title": title,
+                    "title": f"{prop_type_raw} at {project_name}, {street}",
                     "property_type": prop_type,
-                    "intent": intent,
+                    "intent": "buy",
                     "address": f"{project_name}, {street}, Singapore",
                     "district": district_num,
                     "asking_price": price,
@@ -194,7 +173,10 @@ class URAScraper:
                     "floor_level": floor_level,
                     "build_year": build_year,
                     "tenure": tenure,
-                    "description": description,
+                    "description": (
+                        f"{prop_type_raw} transaction at {project_name}, {street}. "
+                        f"{type_label}. Floor: {floor_range}. Tenure: {tenure_raw}."
+                    ),
                 })
             except Exception as exc:
                 logger.debug("[ura] Transaction parse error: %s", exc)
@@ -202,16 +184,15 @@ class URAScraper:
         return results
 
     async def _fetch_rentals(
-        self, client: httpx.AsyncClient, access_key: str, token: str
+        self, client: AsyncSession, access_key: str, token: str
     ) -> list[dict]:
         results = []
         try:
             resp = await client.get(
-                f"{_URA_BASE}/invokeUraDS",
+                f"{_URA_BASE}/invokeUraDS/v1",
                 params={"service": "PMI_Resi_Rental", "batch": "1"},
                 headers={"AccessKey": access_key, "Token": token},
             )
-            resp.raise_for_status()
             data = resp.json()
 
             if data.get("Status") != "Success":
@@ -267,26 +248,19 @@ class URAScraper:
                 if fl_m:
                     floor_level = (int(fl_m.group(1)) + int(fl_m.group(2))) // 2
 
-                lease_date = txn.get("leaseDate", "")  # YYMM format
-
+                lease_date = txn.get("leaseDate", "")
                 external_id = (
                     f"ura-rent-{project_name}-{floor_range}-{area_sqft_raw}-{lease_date}"
                     .replace(" ", "-")
                     .lower()
                 )
 
-                title = f"{prop_type_raw} Rental at {project_name}, {street}"
                 rent_str = f"SGD {rent:,.0f}/mth" if rent else "POA"
-                description = (
-                    f"{prop_type_raw} rental at {project_name}, {street}. "
-                    f"Floor: {floor_range}. Monthly rent: {rent_str}."
-                )
-
                 results.append({
                     "source": "ura",
-                    "source_url": "https://www.ura.gov.sg/maps/#",
+                    "source_url": "https://eservice.ura.gov.sg/maps/#",
                     "external_id": external_id,
-                    "title": title,
+                    "title": f"{prop_type_raw} Rental at {project_name}, {street}",
                     "property_type": prop_type,
                     "intent": "rent",
                     "address": f"{project_name}, {street}, Singapore",
@@ -296,7 +270,10 @@ class URAScraper:
                     "psf": psf,
                     "bedrooms": bedrooms,
                     "floor_level": floor_level,
-                    "description": description,
+                    "description": (
+                        f"{prop_type_raw} rental at {project_name}, {street}. "
+                        f"Floor: {floor_range}. Monthly rent: {rent_str}."
+                    ),
                 })
             except Exception as exc:
                 logger.debug("[ura] Rental parse error: %s", exc)
