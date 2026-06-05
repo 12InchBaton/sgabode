@@ -2,9 +2,11 @@
 HDB Rental scraper — data.gov.sg official API.
 
 Dataset: HDB Rental Contracts (approved rental applications)
-No Playwright needed — pure httpx API calls.
+Fetches up to RECORDS_PER_TOWN recent records per town across all 26 towns
+so every region is represented, not just the most recently added entries.
 """
 
+import asyncio
 import logging
 import re
 
@@ -16,6 +18,16 @@ logger = logging.getLogger(__name__)
 
 _DATASET_ID = "d_c9f57187485a0d3dd361c01c9775d2d9"
 _API_BASE = "https://data.gov.sg/api/action/datastore_search"
+RECORDS_PER_TOWN = 10  # recent rentals per town → 26 towns × 10 = up to 260 listings
+
+_ALL_TOWNS = [
+    "ANG MO KIO", "BEDOK", "BISHAN", "BUKIT BATOK", "BUKIT MERAH",
+    "BUKIT PANJANG", "BUKIT TIMAH", "CENTRAL AREA", "CHOA CHU KANG",
+    "CLEMENTI", "GEYLANG", "HOUGANG", "JURONG EAST", "JURONG WEST",
+    "KALLANG/WHAMPOA", "MARINE PARADE", "PASIR RIS", "PUNGGOL",
+    "QUEENSTOWN", "SEMBAWANG", "SENGKANG", "SERANGOON", "TAMPINES",
+    "TOA PAYOH", "WOODLANDS", "YISHUN",
+]
 
 _FLAT_TYPE_MAP = {
     "1 ROOM":           (1, "hdb"),
@@ -29,36 +41,40 @@ _FLAT_TYPE_MAP = {
 
 
 class HDBRentalScraper:
-    """Fetches HDB rental transactions from data.gov.sg."""
+    """Fetches HDB rental transactions from data.gov.sg, one town at a time."""
 
     source = "hdb_rental"
     start_urls = ["https://data.gov.sg/datasets/d_c9f57187485a0d3dd361c01c9775d2d9/view"]
 
     async def run(self) -> list[dict]:
+        all_results = []
         async with httpx.AsyncClient(timeout=30) as client:
-            try:
-                resp = await client.get(
-                    _API_BASE,
-                    params={
-                        "resource_id": _DATASET_ID,
-                        "limit": 100,
-                        "sort": "_id desc",
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-            except Exception as exc:
-                logger.error("[hdb_rental] Fetch error: %s", exc)
-                return []
+            for town in _ALL_TOWNS:
+                try:
+                    resp = await client.get(
+                        _API_BASE,
+                        params={
+                            "resource_id": _DATASET_ID,
+                            "limit": RECORDS_PER_TOWN,
+                            "sort": "_id desc",
+                            "filters": f'{{"town":"{town}"}}',
+                        },
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if not data.get("success"):
+                        logger.warning("[hdb_rental] API error for %s: %s", town, data)
+                        continue
+                    records = data.get("result", {}).get("records", [])
+                    parsed = [r for rec in records if (r := self._parse_record(rec))]
+                    all_results.extend(parsed)
+                    logger.debug("[hdb_rental] %s: %d records", town, len(parsed))
+                except Exception as exc:
+                    logger.warning("[hdb_rental] Fetch error for %s: %s", town, exc)
+                await asyncio.sleep(0.3)
 
-        if not data.get("success"):
-            logger.warning("[hdb_rental] API returned success=False: %s", data)
-            return []
-
-        records = data.get("result", {}).get("records", [])
-        results = [r for rec in records if (r := self._parse_record(rec))]
-        logger.info("[hdb_rental] %d records fetched", len(results))
-        return results
+        logger.info("[hdb_rental] Total: %d records across %d towns", len(all_results), len(_ALL_TOWNS))
+        return all_results
 
     def _parse_record(self, rec: dict) -> dict | None:
         try:
