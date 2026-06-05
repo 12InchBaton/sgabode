@@ -61,7 +61,7 @@ class URAScraper:
         try:
             resp = await client.get(
                 f"{_URA_BASE}/insertNewToken/v1",
-                params={"accesskey": access_key},
+                headers={"AccessKey": access_key},
             )
             content_type = resp.headers.get("content-type", "")
             if "json" not in content_type:
