@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     # URA Data Service (free key from ura.gov.sg/maps/api/)
     URA_ACCESS_KEY: str = ""
 
+    # Google Places API (for nearby amenity search)
+    GOOGLE_PLACES_API_KEY: str = ""
+
     # App
     API_BASE_URL: str = "http://localhost:8000"
     LISTING_BOOST_PRICE: int = 4900  # cents

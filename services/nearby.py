@@ -3,87 +3,89 @@ Nearby amenities service.
 
 Uses:
   - OneMap Singapore API (free, no key) for geocoding address → lat/lng
-  - OpenStreetMap Overpass API (free) for nearby place search
+  - Google Places API (Nearby Search) for amenity search
 
 Public surface:
     get_nearby(listing, amenity_types, radius_metres) → str  (human-readable summary)
 """
 
 import logging
+import math
 from typing import Optional
 
 import httpx
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 _ONEMAP_SEARCH = "https://www.onemap.gov.sg/api/common/elastic/search"
-_OVERPASS_API = "https://overpass-api.de/api/interpreter"
+_GOOGLE_PLACES_URL = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
 
-# Map user-friendly terms → OSM tags to query
-# Each entry is a list of (key, value) pairs tried in one Overpass union
-_AMENITY_MAP: dict[str, list[tuple[str, str]]] = {
+# Map user-friendly terms → Google Places types
+# https://developers.google.com/maps/documentation/places/web-service/supported_types
+_AMENITY_MAP: dict[str, list[str]] = {
     # Food & drink
-    "cafe":             [("amenity", "cafe")],
-    "coffee shop":      [("amenity", "cafe"), ("amenity", "fast_food")],
-    "hawker":           [("amenity", "food_court"), ("amenity", "hawker_centre")],
-    "hawker centre":    [("amenity", "food_court"), ("amenity", "hawker_centre")],
-    "restaurant":       [("amenity", "restaurant")],
-    "food":             [("amenity", "cafe"), ("amenity", "restaurant"), ("amenity", "food_court"), ("amenity", "fast_food")],
+    "cafe":             ["cafe"],
+    "coffee shop":      ["cafe"],
+    "hawker":           ["meal_takeaway", "food_court"],
+    "hawker centre":    ["meal_takeaway", "food_court"],
+    "restaurant":       ["restaurant"],
+    "food":             ["restaurant", "cafe", "meal_takeaway", "food_court"],
 
     # Shopping
-    "mall":             [("shop", "mall"), ("building", "retail")],
-    "shopping mall":    [("shop", "mall"), ("building", "retail")],
-    "supermarket":      [("shop", "supermarket")],
-    "grocery":          [("shop", "supermarket"), ("shop", "convenience")],
-    "minimart":         [("shop", "convenience")],
+    "mall":             ["shopping_mall"],
+    "shopping mall":    ["shopping_mall"],
+    "supermarket":      ["supermarket", "grocery_or_supermarket"],
+    "grocery":          ["supermarket", "grocery_or_supermarket", "convenience_store"],
+    "minimart":         ["convenience_store"],
 
     # Parks & recreation
-    "park":             [("leisure", "park"), ("leisure", "garden")],
-    "dog park":         [("leisure", "dog_park"), ("leisure", "park")],
-    "playground":       [("leisure", "playground")],
-    "gym":              [("leisure", "fitness_centre"), ("amenity", "gym")],
-    "swimming pool":    [("leisure", "swimming_pool")],
-    "sports":           [("leisure", "sports_centre"), ("leisure", "fitness_centre")],
+    "park":             ["park"],
+    "dog park":         ["park"],
+    "playground":       ["playground", "park"],
+    "gym":              ["gym", "health"],
+    "swimming pool":    ["swimming_pool"],
+    "sports":           ["stadium", "gym", "health"],
 
     # Transport
-    "mrt":              [("railway", "station"), ("station", "subway")],
-    "bus stop":         [("highway", "bus_stop")],
-    "bus":              [("highway", "bus_stop")],
+    "mrt":              ["subway_station", "train_station"],
+    "bus stop":         ["bus_station"],
+    "bus":              ["bus_station"],
 
     # Education
-    "school":           [("amenity", "school")],
-    "primary school":   [("amenity", "school")],
-    "childcare":        [("amenity", "childcare"), ("amenity", "kindergarten")],
-    "kindergarten":     [("amenity", "kindergarten")],
+    "school":           ["school", "primary_school", "secondary_school"],
+    "primary school":   ["primary_school", "school"],
+    "childcare":        ["child_care_agency"],
+    "kindergarten":     ["kindergarten"],
 
     # Healthcare
-    "clinic":           [("amenity", "clinic"), ("amenity", "doctors")],
-    "hospital":         [("amenity", "hospital")],
-    "pharmacy":         [("amenity", "pharmacy")],
+    "clinic":           ["doctor", "health"],
+    "hospital":         ["hospital"],
+    "pharmacy":         ["pharmacy", "drugstore"],
 
     # General
-    "bank":             [("amenity", "bank")],
-    "atm":              [("amenity", "atm")],
-    "library":          [("amenity", "library")],
-    "place of worship": [("amenity", "place_of_worship")],
-    "mosque":           [("amenity", "place_of_worship"), ("religion", "muslim")],
-    "temple":           [("amenity", "place_of_worship")],
-    "church":           [("amenity", "place_of_worship")],
+    "bank":             ["bank"],
+    "atm":              ["atm"],
+    "library":          ["library"],
+    "place of worship": ["place_of_worship"],
+    "mosque":           ["mosque"],
+    "temple":           ["hindu_temple", "place_of_worship"],
+    "church":           ["church"],
 }
 
 
 async def _geocode_onemap(address: str, postal: Optional[str] = None) -> Optional[tuple[float, float]]:
     """
     Return (lat, lng) for a Singapore address using OneMap API.
-    Tries in order: postal code → full address → street+town only.
+    Tries in order: postal code → full address → street only.
     """
+    import re
     candidates = []
     if postal and len(postal) == 6 and postal.isdigit():
         candidates.append(postal)
     if address:
         candidates.append(address)
-        # Also try just the street name (strip "Blk XX" prefix common in HDB addresses)
-        import re
         street_only = re.sub(r"^Blk\s+\w+\s+", "", address, flags=re.IGNORECASE).split(",")[0].strip()
         if street_only and street_only != address:
             candidates.append(street_only)
@@ -101,7 +103,6 @@ async def _geocode_onemap(address: str, postal: Optional[str] = None) -> Optiona
                 if results:
                     r = results[0]
                     lat, lng = float(r["LATITUDE"]), float(r["LONGITUDE"])
-                    # Sanity check — Singapore bounding box
                     if 1.15 <= lat <= 1.50 and 103.6 <= lng <= 104.1:
                         logger.info("OneMap geocoded %r → (%.5f, %.5f)", search_val, lat, lng)
                         return lat, lng
@@ -110,48 +111,60 @@ async def _geocode_onemap(address: str, postal: Optional[str] = None) -> Optiona
     return None
 
 
-def _build_overpass_query(lat: float, lng: float, tags: list[tuple[str, str]], radius: int) -> str:
-    """Build an Overpass QL query for the given OSM tags within radius of a point."""
-    parts = []
-    for key, val in tags:
-        parts.append(f'node["{key}"="{val}"](around:{radius},{lat},{lng});')
-        parts.append(f'way["{key}"="{val}"](around:{radius},{lat},{lng});')
-    union = "\n  ".join(parts)
-    return f"""
-[out:json][timeout:15];
-(
-  {union}
-);
-out center 20;
-""".strip()
+async def _query_google_places(
+    lat: float, lng: float, place_types: list[str], radius: int, api_key: str
+) -> list[dict]:
+    """
+    Query Google Places Nearby Search for each place type and return combined results.
+    Deduplicates by place_id.
+    """
+    seen: set[str] = set()
+    results: list[dict] = []
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for place_type in place_types:
+            try:
+                resp = await client.get(
+                    _GOOGLE_PLACES_URL,
+                    params={
+                        "location": f"{lat},{lng}",
+                        "radius": radius,
+                        "type": place_type,
+                        "key": api_key,
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                if data.get("status") not in ("OK", "ZERO_RESULTS"):
+                    logger.warning("[google_places] API status: %s", data.get("status"))
+                    continue
+
+                for place in data.get("results", []):
+                    place_id = place.get("place_id")
+                    if place_id and place_id not in seen:
+                        seen.add(place_id)
+                        results.append(place)
+
+            except Exception as exc:
+                logger.warning("[google_places] Query failed for type=%s: %s", place_type, exc)
+
+    return results
 
 
-async def _query_overpass(query: str) -> list[dict]:
-    """Run an Overpass query and return the list of elements."""
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(_OVERPASS_API, data={"data": query})
-            resp.raise_for_status()
-            return resp.json().get("elements", [])
-    except Exception as exc:
-        logger.warning("Overpass query failed: %s", exc)
-        return []
+def _haversine_metres(lat1: float, lng1: float, lat2: float, lng2: float) -> int:
+    """Distance in metres between two lat/lng points."""
+    R = 6_371_000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return round(R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
 
 
-def _element_name(el: dict) -> Optional[str]:
-    """Extract a display name from an OSM element."""
-    tags = el.get("tags", {})
-    return tags.get("name") or tags.get("brand") or tags.get("operator")
-
-
-def _element_distance(el: dict, lat: float, lng: float) -> float:
-    """Rough distance in metres using equirectangular approximation."""
-    import math
-    el_lat = el.get("lat") or el.get("center", {}).get("lat", lat)
-    el_lng = el.get("lon") or el.get("center", {}).get("lon", lng)
-    dlat = (el_lat - lat) * 111320
-    dlng = (el_lng - lng) * 111320 * math.cos(math.radians(lat))
-    return round((dlat ** 2 + dlng ** 2) ** 0.5)
+def _walk_time(metres: int) -> str:
+    mins = round(metres / 80)  # ~80m/min walking pace
+    return f"~{mins} min walk" if mins > 0 else "on your doorstep"
 
 
 async def get_nearby(
@@ -165,7 +178,15 @@ async def get_nearby(
     """
     Return a human-readable summary of nearby amenities for a listing.
     Uses stored lat/lng if available, otherwise geocodes via OneMap.
+    Uses Google Places API for amenity search.
     """
+    api_key = getattr(settings, "GOOGLE_PLACES_API_KEY", "")
+    if not api_key:
+        return (
+            "TOOL_ERROR: GOOGLE_PLACES_API_KEY is not configured. "
+            "Tell the user the nearby search is unavailable and suggest they check Google Maps directly."
+        )
+
     # Step 1: get coordinates
     coords = None
     if lat and lng:
@@ -182,44 +203,46 @@ async def get_nearby(
     clat, clng = coords
     radius_metres = min(radius_metres, 2000)  # cap at 2km
 
-    # Step 2: for each requested amenity type, query Overpass
+    # Step 2: for each amenity type, query Google Places
     all_results: list[str] = []
 
     for amenity in amenity_types:
         key = amenity.lower().strip()
-        tags = _AMENITY_MAP.get(key)
+        place_types = _AMENITY_MAP.get(key)
 
-        # Fuzzy fallback: find closest key
-        if not tags:
+        # Fuzzy fallback
+        if not place_types:
             for k in _AMENITY_MAP:
                 if key in k or k in key:
-                    tags = _AMENITY_MAP[k]
+                    place_types = _AMENITY_MAP[k]
                     break
 
-        if not tags:
-            all_results.append(f"**{amenity.title()}**: No search category found for this type.")
+        if not place_types:
+            all_results.append(f"**{amenity.title()}**: Unknown amenity type.")
             continue
 
-        query = _build_overpass_query(clat, clng, tags, radius_metres)
-        elements = await _query_overpass(query)
+        places = await _query_google_places(clat, clng, place_types, radius_metres, api_key)
 
-        if not elements:
+        if not places:
             all_results.append(f"**{amenity.title()}**: None found within {radius_metres}m.")
             continue
 
-        # Sort by distance and take top 5
-        scored = sorted(
-            [(el, _element_distance(el, clat, clng)) for el in elements],
-            key=lambda x: x[1],
-        )[:5]
+        # Sort by distance, take top 5
+        scored = []
+        for p in places:
+            loc = p.get("geometry", {}).get("location", {})
+            plat, plng = loc.get("lat"), loc.get("lng")
+            if plat and plng:
+                dist = _haversine_metres(clat, clng, plat, plng)
+                scored.append((p, dist))
+
+        scored.sort(key=lambda x: x[1])
+        top = scored[:5]
 
         names = []
-        for el, dist in scored:
-            name = _element_name(el)
-            if name:
-                names.append(f"{name} (~{dist}m)")
-            else:
-                names.append(f"Unnamed ({dist}m)")
+        for p, dist in top:
+            name = p.get("name", "Unnamed")
+            names.append(f"{name} ({_walk_time(dist)})")
 
         all_results.append(f"**{amenity.title()}** within {radius_metres}m: {', '.join(names)}")
 
