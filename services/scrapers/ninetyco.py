@@ -12,7 +12,7 @@ import asyncio
 import logging
 import re
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 from services.scrapers.utils import cap_per_district, postal_to_district
 
@@ -55,7 +55,7 @@ class NinetyCoScraper:
 
     async def run(self) -> list[dict]:
         all_listings: list[dict] = []
-        async with httpx.AsyncClient(timeout=30, headers=_HEADERS, follow_redirects=True) as client:
+        async with AsyncSession(impersonate="chrome120", timeout=30) as client:
             for listing_type in ("sale", "rent"):
                 listings = await self._fetch_intent(client, listing_type)
                 all_listings.extend(listings)
@@ -65,7 +65,7 @@ class NinetyCoScraper:
         logger.info("[99co] Total: %d listings", len(all_listings))
         return all_listings
 
-    async def _fetch_intent(self, client: httpx.AsyncClient, listing_type: str) -> list[dict]:
+    async def _fetch_intent(self, client: AsyncSession, listing_type: str) -> list[dict]:
         intent = "rent" if listing_type == "rent" else "buy"
         results = []
 
@@ -79,14 +79,14 @@ class NinetyCoScraper:
                     "show_cluster_preview": "true",
                     "summary_only": "false",
                 }
-                resp = await client.get(_API_BASE, params=params)
+                resp = await client.get(_API_BASE, params=params, headers=_HEADERS)
                 resp.raise_for_status()
                 data = resp.json()
-            except httpx.HTTPStatusError as exc:
-                logger.warning("[99co] HTTP %d on page %d (%s)", exc.response.status_code, page, listing_type)
-                break
             except Exception as exc:
-                logger.error("[99co] Fetch error page %d (%s): %s", page, listing_type, exc)
+                if hasattr(exc, "response") and exc.response is not None:
+                    logger.warning("[99co] HTTP %d on page %d (%s)", exc.response.status_code, page, listing_type)
+                else:
+                    logger.error("[99co] Fetch error page %d (%s): %s", page, listing_type, exc)
                 break
 
             listings_raw = (

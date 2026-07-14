@@ -12,7 +12,7 @@ import asyncio
 import logging
 import re
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 from services.scrapers.utils import cap_per_district, postal_to_district
 
@@ -57,7 +57,7 @@ class SRXScraper:
 
     async def run(self) -> list[dict]:
         all_listings: list[dict] = []
-        async with httpx.AsyncClient(timeout=30, headers=_HEADERS, follow_redirects=True) as client:
+        async with AsyncSession(impersonate="chrome120", timeout=30) as client:
             for intent_code, intent in (("S", "buy"), ("R", "rent")):
                 listings = await self._fetch_intent(client, intent_code, intent)
                 all_listings.extend(listings)
@@ -68,7 +68,7 @@ class SRXScraper:
         return all_listings
 
     async def _fetch_intent(
-        self, client: httpx.AsyncClient, intent_code: str, intent: str
+        self, client: AsyncSession, intent_code: str, intent: str
     ) -> list[dict]:
         results = []
 
@@ -80,14 +80,15 @@ class SRXScraper:
                     "pageNum": page,
                     "maxResult": _PAGE_SIZE,
                 }
-                resp = await client.get(_API_BASE, params=params)
+                resp = await client.get(_API_BASE, params=params, headers=_HEADERS)
                 resp.raise_for_status()
                 data = resp.json()
-            except httpx.HTTPStatusError as exc:
-                logger.warning("[srx] HTTP %d on page %d (%s)", exc.response.status_code, page, intent)
-                break
             except Exception as exc:
-                logger.error("[srx] Fetch error page %d (%s): %s", page, intent, exc)
+                if hasattr(exc, "response") and exc.response is not None:
+                    logger.warning("[srx] HTTP %d on page %d (%s)", exc.response.status_code, page, intent)
+                break
+                else:
+                    logger.error("[srx] Fetch error page %d (%s): %s", page, intent, exc)
                 break
 
             listings_raw = (
