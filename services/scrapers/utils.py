@@ -141,12 +141,16 @@ def clean_text(text: str | None) -> str | None:
 
 
 def cap_per_district(results: list[dict], limit: int = 10) -> list[dict]:
-    """Return up to `limit` records per district, preserving order."""
-    counts: dict[int | None, int] = {}
+    """Return up to `limit` records per known district, preserving order.
+    Listings with no district are always kept (can't bucket them).
+    """
+    counts: dict[int, int] = {}
     out = []
     for r in results:
         d = r.get("district")
-        if counts.get(d, 0) < limit:
+        if d is None:
+            out.append(r)
+        elif counts.get(d, 0) < limit:
             out.append(r)
             counts[d] = counts.get(d, 0) + 1
     return out
