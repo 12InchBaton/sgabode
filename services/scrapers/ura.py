@@ -18,7 +18,7 @@ import re
 from curl_cffi.requests import AsyncSession
 
 from config import settings
-from services.scrapers.utils import postal_to_district
+from services.scrapers.utils import cap_per_district, postal_to_district
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ class URAScraper:
         except Exception as exc:
             logger.error("[ura] Fetch error: %s", exc)
 
-        results = results[:100]
+        results = cap_per_district(results, limit=10)
         logger.info("[ura] %d transaction records fetched", len(results))
         return results
 
@@ -205,7 +205,7 @@ class URAScraper:
         except Exception as exc:
             logger.error("[ura] Rental fetch error: %s", exc)
 
-        results = results[:100]
+        results = cap_per_district(results, limit=10)
         logger.info("[ura] %d rental records fetched", len(results))
         return results
 

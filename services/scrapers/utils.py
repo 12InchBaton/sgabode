@@ -66,6 +66,14 @@ _TOWN_TO_DISTRICT: dict[str, int] = {
     "UPPER THOMSON": 26, "SPRINGLEAF": 26,
     "YISHUN": 27, "SEMBAWANG": 27,
     "SELETAR": 28,
+    # HDB towns missing from original map
+    "BUKIT BATOK": 23,
+    "BUKIT MERAH": 3,
+    "CENTRAL AREA": 1,
+    "JURONG EAST": 22,
+    "JURONG WEST": 22,
+    "KALLANG/WHAMPOA": 12,
+    "KALLANG": 14, "WHAMPOA": 12,
 }
 
 
@@ -130,3 +138,15 @@ def clean_text(text: str | None) -> str | None:
     if not text:
         return None
     return " ".join(text.split()).strip() or None
+
+
+def cap_per_district(results: list[dict], limit: int = 10) -> list[dict]:
+    """Return up to `limit` records per district, preserving order."""
+    counts: dict[int | None, int] = {}
+    out = []
+    for r in results:
+        d = r.get("district")
+        if counts.get(d, 0) < limit:
+            out.append(r)
+            counts[d] = counts.get(d, 0) + 1
+    return out

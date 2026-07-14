@@ -12,7 +12,7 @@ import re
 
 import httpx
 
-from services.scrapers.utils import town_to_district
+from services.scrapers.utils import cap_per_district, town_to_district
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,7 @@ class HDBRentalScraper:
                     logger.warning("[hdb_rental] Fetch error for %s: %s", town, exc)
                 await asyncio.sleep(0.3)
 
+        all_results = cap_per_district(all_results)
         logger.info("[hdb_rental] Total: %d records across %d towns", len(all_results), len(_ALL_TOWNS))
         return all_results
 

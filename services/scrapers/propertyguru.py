@@ -17,6 +17,7 @@ from playwright.async_api import Page
 
 from services.scrapers.base import BaseScraper
 from services.scrapers.utils import (
+    cap_per_district,
     clean_text,
     parse_floor_size,
     parse_price,
@@ -36,6 +37,12 @@ class PropertyGuruScraper(BaseScraper):
         f"{BASE_URL}/property-for-rent",
     ]
     request_delay = 3.0
+
+    async def run(self) -> list[dict]:
+        all_listings = await super().run()
+        all_listings = cap_per_district(all_listings)
+        logger.info("[propertyguru] Total after district cap: %d listings", len(all_listings))
+        return all_listings
 
     async def scrape_page(self, page: Page, url: str) -> list[dict]:
         intent = "rent" if "for-rent" in url else "buy"

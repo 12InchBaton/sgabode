@@ -14,7 +14,7 @@ import re
 
 import httpx
 
-from services.scrapers.utils import postal_to_district
+from services.scrapers.utils import cap_per_district, postal_to_district
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,7 @@ class NinetyCoScraper:
                 all_listings.extend(listings)
                 logger.info("[99co] %s: %d listings fetched", listing_type, len(listings))
                 await asyncio.sleep(2)
+        all_listings = cap_per_district(all_listings)
         logger.info("[99co] Total: %d listings", len(all_listings))
         return all_listings
 

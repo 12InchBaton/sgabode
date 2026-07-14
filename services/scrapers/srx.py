@@ -14,7 +14,7 @@ import re
 
 import httpx
 
-from services.scrapers.utils import postal_to_district
+from services.scrapers.utils import cap_per_district, postal_to_district
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ class SRXScraper:
                 all_listings.extend(listings)
                 logger.info("[srx] %s: %d listings", intent, len(listings))
                 await asyncio.sleep(2)
+        all_listings = cap_per_district(all_listings)
         logger.info("[srx] Total: %d listings", len(all_listings))
         return all_listings
 
